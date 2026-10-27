@@ -31,7 +31,7 @@ jobs:
           cargo install --locked trunk ;
           sudo apt-get update && sudo apt-get install -y imagemagick ;
 
-      # التعديل الجراحي: تحميل المكتبات أولاً، ثم تعديل كروت الشاشة في مكتبات الرسوميات فقط
+      # التعديل الجراحي لمعالج الرسوميات
       - name: Targeted GPU Limits Patch
         run: |
           echo "Fetching cargo dependencies..." ;
@@ -42,15 +42,13 @@ jobs:
           
           for dir in "$REGISTRY"/wgpu* "$REGISTRY"/eframe* "$REGISTRY"/egui_wgpu* ; do
             if [ -d "$dir" ]; then
-              echo "Patching limits in: $dir" ;
               find "$dir" -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true ;
             fi
           done ;
           
-          echo "Patching local workspace just in case..." ;
           find apps crates -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true ;
 
-      # بناء حزمة الويب
+      # بناء الويب والبحث الذكي عن المسار لنسخه في www
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
@@ -65,9 +63,17 @@ jobs:
           cd "$GITHUB_WORKSPACE" ;
           
           mkdir -p www ;
-          if [ -d "$TARGET_DIR/dist/web" ]; then cp -r "$TARGET_DIR/dist/web/"* www/ ;
-          elif [ -d "$TARGET_DIR/dist" ]; then cp -r "$TARGET_DIR/dist/"* www/ ;
-          else cp -r dist/* www/ || true ; fi ;
+          
+          # بحث تلقائي عن المجلد اللي طلع فيه البناء ونسخه
+          INDEX_PATH=$(find . -name "index.html" -path "*/dist/*" | head -n 1) ;
+          if [ -n "$INDEX_PATH" ]; then
+            DIST_DIR=$(dirname "$INDEX_PATH") ;
+            echo "Found web bundle in: $DIST_DIR" ;
+            cp -r "$DIST_DIR/"* www/ ;
+          else
+            echo "Fallback copying..." ;
+            cp -r "$TARGET_DIR/dist/"* www/ || true ;
+          fi ;
 
       # إعداد Capacitor للأندرويد
       - name: Setup Capacitor
