@@ -28,132 +28,111 @@ jobs:
 
       - name: Install Trunk & Image Tools
         run: |
-          cargo install --locked trunk
-          sudo apt-get update && sudo apt-get install -y imagemagick
+          cargo install --locked trunk ;
+          sudo apt-get update && sudo apt-get install -y imagemagick ;
 
-      - name: Patch SolidCraft GPU Limits
+      # التعديل الجراحي: تحميل المكتبات أولاً، ثم تعديل كروت الشاشة في مكتبات الرسوميات فقط
+      - name: Targeted GPU Limits Patch
         run: |
-          echo "Patching WGPU texture limit to 4096 in solidcraft codebase..."
-          find apps crates -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
+          echo "Fetching cargo dependencies..." ;
+          cargo fetch --target wasm32-unknown-unknown ;
           
-          python3 -c '
-          import os, glob
-          for path in glob.glob("apps/solidcraft-web/src/**/*.rs", recursive=True):
-              with open(path, "r") as f:
-                  content = f.read()
-              if "wgpu_options" in content or "WebOptions" in content or "eframe::WebRunner" in content:
-                  content = content.replace("wgpu::Limits::default()", "wgpu::Limits::downlevel_defaults()")
-                  content = content.replace("wgpu::Limits::downlevel_webgl2_defaults()", "wgpu::Limits::downlevel_defaults()")
-                  with open(path, "w") as f:
-                      f.write(content)
-          '
+          echo "Patching eframe and wgpu crates for Android GPU compatibility (4096 limits)..." ;
+          REGISTRY=$(ls -d /home/runner/.cargo/registry/src/* | head -n 1) ;
+          
+          for dir in "$REGISTRY"/wgpu* "$REGISTRY"/eframe* "$REGISTRY"/egui_wgpu* ; do
+            if [ -d "$dir" ]; then
+              echo "Patching limits in: $dir" ;
+              find "$dir" -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true ;
+            fi
+          done ;
+          
+          echo "Patching local workspace just in case..." ;
+          find apps crates -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true ;
 
+      # بناء حزمة الويب
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
         run: |
-          if [ -d "apps/solidcraft-web" ]; then
-            cd apps/solidcraft-web
-          elif [ -d "apps/web" ]; then
-            cd apps/web
-          elif [ -d "apps/solidcraft" ]; then
-            cd apps/solidcraft
-          fi
-          trunk build --release
-          cd "$GITHUB_WORKSPACE"
-          mkdir -p www
-          if [ -d "dist/web" ]; then
-            cp -r dist/web/* www/
-          elif [ -d "apps/solidcraft-web/dist" ]; then
-            cp -r apps/solidcraft-web/dist/* www/
-          elif [ -d "dist" ]; then
-            cp -r dist/* www/
-          fi
+          TARGET_DIR="." ;
+          if [ -d "apps/solidcraft-web" ]; then TARGET_DIR="apps/solidcraft-web";
+          elif [ -d "apps/solidcraft" ]; then TARGET_DIR="apps/solidcraft";
+          elif [ -d "apps/web" ]; then TARGET_DIR="apps/web"; fi ;
+          
+          cd "$TARGET_DIR" ;
+          trunk build --release ;
+          cd "$GITHUB_WORKSPACE" ;
+          
+          mkdir -p www ;
+          if [ -d "$TARGET_DIR/dist/web" ]; then cp -r "$TARGET_DIR/dist/web/"* www/ ;
+          elif [ -d "$TARGET_DIR/dist" ]; then cp -r "$TARGET_DIR/dist/"* www/ ;
+          else cp -r dist/* www/ || true ; fi ;
 
+      # إعداد Capacitor للأندرويد
       - name: Setup Capacitor
         run: |
-          npm init -y
-          npm install @capacitor/core @capacitor/cli @capacitor/android
-          npx cap init "SolidCraft" "com.craft.solidcraft" --web-dir "www"
-          npx cap add android
-          npx cap sync android
+          npm init -y ;
+          npm install @capacitor/core @capacitor/cli @capacitor/android ;
+          npx cap init "SolidCraft" "com.craft.solidcraft" --web-dir "www" ;
+          npx cap add android ;
+          npx cap sync android ;
 
-      - name: Enable Hardware Acceleration & Optimize memory
+      # تفعيل التسريع العتادي
+      - name: Enable Hardware Acceleration
         run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          sed -i 's/<application /<application android:hardwareAccelerated="true" android:largeHeap="true" /g' "$MANIFEST"
+          MANIFEST="android/app/src/main/AndroidManifest.xml" ;
+          sed -i 's/<application /<application android:hardwareAccelerated="true" android:largeHeap="true" /g' "$MANIFEST" ;
 
+      # استخراج أيقونة التطبيق
       - name: Enforce SolidCraft Official Icon
         run: |
-          ICON_SRC=""
-          if [ -f "packaging/solidcraft.png" ]; then
-            ICON_SRC="packaging/solidcraft.png"
-          elif [ -f "assets/app-icon/icon.png" ]; then
-            ICON_SRC="assets/app-icon/icon.png"
-          elif [ -f "assets/icon.png" ]; then
-            ICON_SRC="assets/icon.png"
-          fi
-
+          ICON_SRC="" ;
+          if [ -f "packaging/solidcraft.png" ]; then ICON_SRC="packaging/solidcraft.png";
+          elif [ -f "assets/app-icon/icon.png" ]; then ICON_SRC="assets/app-icon/icon.png";
+          elif [ -f "assets/icon.png" ]; then ICON_SRC="assets/icon.png"; fi ;
+          
           if [ -n "$ICON_SRC" ]; then
-            RES_DIR="android/app/src/main/res"
-            rm -rf "$RES_DIR"/mipmap-anydpi-v26
-            rm -f "$RES_DIR"/drawable/ic_launcher_background.xml
-            rm -f "$RES_DIR"/drawable-v24/ic_launcher_foreground.xml
-
+            RES_DIR="android/app/src/main/res" ;
+            rm -rf "$RES_DIR"/mipmap-anydpi-v26 ;
+            rm -f "$RES_DIR"/drawable/ic_launcher_background.xml ;
+            rm -f "$RES_DIR"/drawable-v24/ic_launcher_foreground.xml ;
             for entry in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
-              folder="${entry%%:*}"
-              size="${entry##*:}"
-              mkdir -p "$RES_DIR/mipmap-$folder"
-              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher.png"
-              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_round.png"
-              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_foreground.png"
-            done
-          fi
+              folder="${entry%%:*}" ;
+              size="${entry##*:}" ;
+              mkdir -p "$RES_DIR/mipmap-$folder" ;
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher.png" ;
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_round.png" ;
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_foreground.png" ;
+            done ;
+          fi ;
 
+      # تثبيت الاسم في الأندرويد
       - name: Enforce App Name
         run: |
-          sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml
-          sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml
+          sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml ;
+          sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml ;
 
+      # حل تعارض كوتلن
       - name: Fix Kotlin Duplicate Classes
         run: |
-          cat << 'EOF' >> android/app/build.gradle
+          echo "configurations.all { resolutionStrategy.eachDependency { DependencyResolveDetails details -> if (details.requested.group == 'org.jetbrains.kotlin') { details.useVersion '1.8.22' } } }" >> android/app/build.gradle ;
+          echo "dependencies { constraints { implementation(\"org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22\") { because(\"align with kotlin-stdlib\") } implementation(\"org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22\") { because(\"align with kotlin-stdlib\") } } }" >> android/app/build.gradle ;
 
-          configurations.all {
-              resolutionStrategy.eachDependency { DependencyResolveDetails details ->
-                  if (details.requested.group == 'org.jetbrains.kotlin') {
-                      details.useVersion '1.8.22'
-                  }
-              }
-          }
-          dependencies {
-              constraints {
-                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22") {
-                      because("align with kotlin-stdlib")
-                  }
-                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22") {
-                      because("align with kotlin-stdlib")
-                  }
-              }
-          }
-          EOF
-
-      # خطوة التجميع مع توليد الشهادة وتوقيع التطبيق رقمياً
+      # التجميع وإضافة شهادة التوقيع الرقمية
       - name: Build and Sign Android APK
         run: |
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleDebug
+          cd android ;
+          chmod +x gradlew ;
+          ./gradlew assembleDebug ;
           
-          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          APK_PATH="app/build/outputs/apk/debug/app-debug.apk" ;
+          keytool -genkey -v -keystore craft.keystore -alias craft -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Craft, OU=Craft, O=Craft, L=Cairo, S=Cairo, C=EG" ;
           
-          # 1. إنشاء شهادة رقمية (Keystore) مؤقتة
-          keytool -genkey -v -keystore craft.keystore -alias craft -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Craft, OU=Craft, O=Craft, L=Cairo, S=Cairo, C=EG"
-          
-          # 2. توقيع الـ APK باستخدام أداة apksigner لضمان التوافق مع أنظمة التابلت
-          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -r | head -n 1)
-          $APKSIGNER sign --ks craft.keystore --ks-pass pass:123456 --key-pass pass:123456 $APK_PATH
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -r | head -n 1) ;
+          $APKSIGNER sign --ks craft.keystore --ks-pass pass:123456 --key-pass pass:123456 $APK_PATH ;
 
+      # رفع ملف الـ APK النهائي
       - name: Upload APK File
         uses: actions/upload-artifact@v4
         with:
