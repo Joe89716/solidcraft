@@ -31,24 +31,61 @@ jobs:
           cargo install --locked trunk ;
           sudo apt-get update && sudo apt-get install -y imagemagick ;
 
-      # التعديل الجراحي لمعالج الرسوميات
+      # التعديل الجراحي الذكي بالبايثون لخفض قيود الرسوميات بدقة
       - name: Targeted GPU Limits Patch
         run: |
           echo "Fetching cargo dependencies..." ;
           cargo fetch --target wasm32-unknown-unknown ;
           
-          echo "Patching eframe and wgpu crates for Android GPU compatibility (4096 limits)..." ;
-          REGISTRY=$(ls -d /home/runner/.cargo/registry/src/* | head -n 1) ;
+          echo "Patching cargo registry for WebGL/WebGPU Limits..." ;
+          python3 -c '
+          import os
+          registry = "/home/runner/.cargo/registry/src"
+          if os.path.exists(registry):
+              for root, dirs, files in os.walk(registry):
+                  if "wgpu" in root or "eframe" in root or "egui" in root:
+                      for file in files:
+                          if file.endswith(".rs"):
+                              filepath = os.path.join(root, file)
+                              try:
+                                  with open(filepath, "r", encoding="utf-8") as f:
+                                      content = f.read()
+                                  
+                                  modified = False
+                                  if "max_texture_dimension_2d: 8192" in content:
+                                      content = content.replace("max_texture_dimension_2d: 8192", "max_texture_dimension_2d: 4096")
+                                      modified = True
+                                  if "max_texture_dimension_2d: 16384" in content:
+                                      content = content.replace("max_texture_dimension_2d: 16384", "max_texture_dimension_2d: 4096")
+                                      modified = True
+                                      
+                                  if modified:
+                                      with open(filepath, "w", encoding="utf-8") as f:
+                                          f.write(content)
+                              except:
+                                  pass
+          '
           
-          for dir in "$REGISTRY"/wgpu* "$REGISTRY"/eframe* "$REGISTRY"/egui_wgpu* ; do
-            if [ -d "$dir" ]; then
-              find "$dir" -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true ;
-            fi
-          done ;
-          
-          find apps crates -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true ;
+          echo "Patching local workspace..." ;
+          python3 -c '
+          import os
+          for root, dirs, files in os.walk("."):
+              if "target" in root: continue
+              for file in files:
+                  if file.endswith(".rs"):
+                      filepath = os.path.join(root, file)
+                      try:
+                          with open(filepath, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          if "8192" in content:
+                              content = content.replace("8192", "4096")
+                              with open(filepath, "w", encoding="utf-8") as f:
+                                  f.write(content)
+                      except:
+                          pass
+          '
 
-      # بناء الويب والبحث الذكي عن المسار لنسخه في www
+      # بناء الويب والبحث الذكي عن المسار لنسخه
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
@@ -64,7 +101,6 @@ jobs:
           
           mkdir -p www ;
           
-          # بحث تلقائي عن المجلد اللي طلع فيه البناء ونسخه
           INDEX_PATH=$(find . -name "index.html" -path "*/dist/*" | head -n 1) ;
           if [ -n "$INDEX_PATH" ]; then
             DIST_DIR=$(dirname "$INDEX_PATH") ;
@@ -113,13 +149,13 @@ jobs:
             done ;
           fi ;
 
-      # تثبيت الاسم في الأندرويد
+      # تثبيت الاسم
       - name: Enforce App Name
         run: |
           sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml ;
           sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml ;
 
-      # حل تعارض كوتلن بطباعة السطور بشكل منفصل وصحيح
+      # حل تعارض كوتلن
       - name: Fix Kotlin Duplicate Classes
         run: |
           echo "configurations.all {" >> android/app/build.gradle ;
@@ -136,7 +172,7 @@ jobs:
           echo "  }" >> android/app/build.gradle ;
           echo "}" >> android/app/build.gradle ;
 
-      # التجميع وإضافة شهادة التوقيع الرقمية
+      # التجميع وإضافة الشهادة
       - name: Build and Sign Android APK
         run: |
           cd android ;
@@ -149,7 +185,6 @@ jobs:
           APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -r | head -n 1) ;
           $APKSIGNER sign --ks craft.keystore --ks-pass pass:123456 --key-pass pass:123456 $APK_PATH ;
 
-      # رفع ملف الـ APK النهائي
       - name: Upload APK File
         uses: actions/upload-artifact@v4
         with:
