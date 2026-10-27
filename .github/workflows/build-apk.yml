@@ -31,14 +31,11 @@ jobs:
           cargo install --locked trunk
           sudo apt-get update && sudo apt-get install -y imagemagick
 
-      # 1. خفض قيود الرسوميات (WGPU) بأمان تام فقط داخل كود SolidCraft دون المساس بـ Cargo Registry
       - name: Patch SolidCraft GPU Limits
         run: |
           echo "Patching WGPU texture limit to 4096 in solidcraft codebase..."
-          # استبدال أي إشارات صريحة لأبعاد 8192 بـ 4096 داخل المشروع فقط
           find apps crates -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
           
-          # فرض حدود downlevel_defaults الداعمة للموبايل داخل كود الويب
           python3 -c '
           import os, glob
           for path in glob.glob("apps/solidcraft-web/src/**/*.rs", recursive=True):
@@ -49,10 +46,8 @@ jobs:
                   content = content.replace("wgpu::Limits::downlevel_webgl2_defaults()", "wgpu::Limits::downlevel_defaults()")
                   with open(path, "w") as f:
                       f.write(content)
-                  print(f"Patched: {path}")
           '
 
-      # 2. بناء حزمة الويب لـ SolidCraft
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
@@ -75,7 +70,6 @@ jobs:
             cp -r dist/* www/
           fi
 
-      # 3. إعداد Capacitor للأندرويد
       - name: Setup Capacitor
         run: |
           npm init -y
@@ -84,13 +78,11 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      # 4. تفعيل التسريع العتادي والـ Large Heap لدعم الـ 3D المعقد
       - name: Enable Hardware Acceleration & Optimize memory
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
           sed -i 's/<application /<application android:hardwareAccelerated="true" android:largeHeap="true" /g' "$MANIFEST"
 
-      # 5. استبدال وتجهيز الأيقونة الأصلية
       - name: Enforce SolidCraft Official Icon
         run: |
           ICON_SRC=""
@@ -118,13 +110,11 @@ jobs:
             done
           fi
 
-      # 6. تثبيت اسم التطبيق
       - name: Enforce App Name
         run: |
           sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml
           sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml
 
-      # 7. حل تعارض كوتلن
       - name: Fix Kotlin Duplicate Classes
         run: |
           cat << 'EOF' >> android/app/build.gradle
@@ -148,14 +138,22 @@ jobs:
           }
           EOF
 
-      # 8. تجميع الـ APK النهائي
-      - name: Build Android Debug APK
+      # خطوة التجميع مع توليد الشهادة وتوقيع التطبيق رقمياً
+      - name: Build and Sign Android APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew assembleDebug
+          
+          APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+          
+          # 1. إنشاء شهادة رقمية (Keystore) مؤقتة
+          keytool -genkey -v -keystore craft.keystore -alias craft -keyalg RSA -keysize 2048 -validity 10000 -storepass 123456 -keypass 123456 -dname "CN=Craft, OU=Craft, O=Craft, L=Cairo, S=Cairo, C=EG"
+          
+          # 2. توقيع الـ APK باستخدام أداة apksigner لضمان التوافق مع أنظمة التابلت
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -r | head -n 1)
+          $APKSIGNER sign --ks craft.keystore --ks-pass pass:123456 --key-pass pass:123456 $APK_PATH
 
-      # 9. رفع الملف للتحميل
       - name: Upload APK File
         uses: actions/upload-artifact@v4
         with:
