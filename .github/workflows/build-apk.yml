@@ -119,11 +119,22 @@ jobs:
           sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml ;
           sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml ;
 
-      # حل تعارض كوتلن
+      # حل تعارض كوتلن بطباعة السطور بشكل منفصل وصحيح
       - name: Fix Kotlin Duplicate Classes
         run: |
-          echo "configurations.all { resolutionStrategy.eachDependency { DependencyResolveDetails details -> if (details.requested.group == 'org.jetbrains.kotlin') { details.useVersion '1.8.22' } } }" >> android/app/build.gradle ;
-          echo "dependencies { constraints { implementation(\"org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22\") { because(\"align with kotlin-stdlib\") } implementation(\"org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22\") { because(\"align with kotlin-stdlib\") } } }" >> android/app/build.gradle ;
+          echo "configurations.all {" >> android/app/build.gradle ;
+          echo "  resolutionStrategy.eachDependency { DependencyResolveDetails details ->" >> android/app/build.gradle ;
+          echo "    if (details.requested.group == 'org.jetbrains.kotlin') {" >> android/app/build.gradle ;
+          echo "      details.useVersion '1.8.22'" >> android/app/build.gradle ;
+          echo "    }" >> android/app/build.gradle ;
+          echo "  }" >> android/app/build.gradle ;
+          echo "}" >> android/app/build.gradle ;
+          echo "dependencies {" >> android/app/build.gradle ;
+          echo "  constraints {" >> android/app/build.gradle ;
+          echo "    implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22') { because('align') }" >> android/app/build.gradle ;
+          echo "    implementation('org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22') { because('align') }" >> android/app/build.gradle ;
+          echo "  }" >> android/app/build.gradle ;
+          echo "}" >> android/app/build.gradle ;
 
       # التجميع وإضافة شهادة التوقيع الرقمية
       - name: Build and Sign Android APK
