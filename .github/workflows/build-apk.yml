@@ -31,17 +31,28 @@ jobs:
           cargo install --locked trunk
           sudo apt-get update && sudo apt-get install -y imagemagick
 
-      # 1. حل مشكلة أبعاد الرسوميات (WGPU Limits) لضمان عمل الـ 3D على معالجات الموبايل
-      - name: Fetch and Patch WGPU Limits
+      # 1. خفض قيود الرسوميات (WGPU) بأمان تام فقط داخل كود SolidCraft دون المساس بـ Cargo Registry
+      - name: Patch SolidCraft GPU Limits
         run: |
-          cargo fetch --target wasm32-unknown-unknown
-          echo "Patching texture limits for mobile GPUs..."
-          find /home/runner/.cargo/registry/src/ -type f -name "*.rs" -exec sed -i 's/max_texture_dimension_2d: 8192/max_texture_dimension_2d: 4096/g' {} + || true
-          find /home/runner/.cargo/registry/src/ -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
-          find . -type f -name "*.rs" -exec sed -i 's/max_texture_dimension_2d: 8192/max_texture_dimension_2d: 4096/g' {} + || true
-          find . -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
+          echo "Patching WGPU texture limit to 4096 in solidcraft codebase..."
+          # استبدال أي إشارات صريحة لأبعاد 8192 بـ 4096 داخل المشروع فقط
+          find apps crates -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
+          
+          # فرض حدود downlevel_defaults الداعمة للموبايل داخل كود الويب
+          python3 -c '
+          import os, glob
+          for path in glob.glob("apps/solidcraft-web/src/**/*.rs", recursive=True):
+              with open(path, "r") as f:
+                  content = f.read()
+              if "wgpu_options" in content or "WebOptions" in content or "eframe::WebRunner" in content:
+                  content = content.replace("wgpu::Limits::default()", "wgpu::Limits::downlevel_defaults()")
+                  content = content.replace("wgpu::Limits::downlevel_webgl2_defaults()", "wgpu::Limits::downlevel_defaults()")
+                  with open(path, "w") as f:
+                      f.write(content)
+                  print(f"Patched: {path}")
+          '
 
-      # 2. بناء حزمة الويب الرسمية لـ SolidCraft
+      # 2. بناء حزمة الويب لـ SolidCraft
       - name: Build Web Bundle
         env:
           RUSTFLAGS: "-A warnings"
@@ -73,7 +84,80 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      # 4. تفعيل التسريع العتادي لـ WebGL2 (ضروري للـ 3D)
-      - name: Enable Hardware Acceleration
+      # 4. تفعيل التسريع العتادي والـ Large Heap لدعم الـ 3D المعقد
+      - name: Enable Hardware Acceleration & Optimize memory
         run: |
           MANIFEST="android/app/src/main/AndroidManifest.xml"
+          sed -i 's/<application /<application android:hardwareAccelerated="true" android:largeHeap="true" /g' "$MANIFEST"
+
+      # 5. استبدال وتجهيز الأيقونة الأصلية
+      - name: Enforce SolidCraft Official Icon
+        run: |
+          ICON_SRC=""
+          if [ -f "packaging/solidcraft.png" ]; then
+            ICON_SRC="packaging/solidcraft.png"
+          elif [ -f "assets/app-icon/icon.png" ]; then
+            ICON_SRC="assets/app-icon/icon.png"
+          elif [ -f "assets/icon.png" ]; then
+            ICON_SRC="assets/icon.png"
+          fi
+
+          if [ -n "$ICON_SRC" ]; then
+            RES_DIR="android/app/src/main/res"
+            rm -rf "$RES_DIR"/mipmap-anydpi-v26
+            rm -f "$RES_DIR"/drawable/ic_launcher_background.xml
+            rm -f "$RES_DIR"/drawable-v24/ic_launcher_foreground.xml
+
+            for entry in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
+              folder="${entry%%:*}"
+              size="${entry##*:}"
+              mkdir -p "$RES_DIR/mipmap-$folder"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher.png"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_round.png"
+              convert "$ICON_SRC" -resize "${size}x${size}" "$RES_DIR/mipmap-$folder/ic_launcher_foreground.png"
+            done
+          fi
+
+      # 6. تثبيت اسم التطبيق
+      - name: Enforce App Name
+        run: |
+          sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml
+          sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">SolidCraft<\/string>/g' android/app/src/main/res/values/strings.xml
+
+      # 7. حل تعارض كوتلن
+      - name: Fix Kotlin Duplicate Classes
+        run: |
+          cat << 'EOF' >> android/app/build.gradle
+
+          configurations.all {
+              resolutionStrategy.eachDependency { DependencyResolveDetails details ->
+                  if (details.requested.group == 'org.jetbrains.kotlin') {
+                      details.useVersion '1.8.22'
+                  }
+              }
+          }
+          dependencies {
+              constraints {
+                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.8.22") {
+                      because("align with kotlin-stdlib")
+                  }
+                  implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22") {
+                      because("align with kotlin-stdlib")
+                  }
+              }
+          }
+          EOF
+
+      # 8. تجميع الـ APK النهائي
+      - name: Build Android Debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      # 9. رفع الملف للتحميل
+      - name: Upload APK File
+        uses: actions/upload-artifact@v4
+        with:
+          name: SolidCraft-Offline-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
