@@ -1,0 +1,79 @@
+name: Build SolidCraft APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Setup Rust & WASM
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+
+      - name: Install Trunk & Image Tools
+        run: |
+          cargo install --locked trunk
+          sudo apt-get update && sudo apt-get install -y imagemagick
+
+      # 1. حل مشكلة أبعاد الرسوميات (WGPU Limits) لضمان عمل الـ 3D على معالجات الموبايل
+      - name: Fetch and Patch WGPU Limits
+        run: |
+          cargo fetch --target wasm32-unknown-unknown
+          echo "Patching texture limits for mobile GPUs..."
+          find /home/runner/.cargo/registry/src/ -type f -name "*.rs" -exec sed -i 's/max_texture_dimension_2d: 8192/max_texture_dimension_2d: 4096/g' {} + || true
+          find /home/runner/.cargo/registry/src/ -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
+          find . -type f -name "*.rs" -exec sed -i 's/max_texture_dimension_2d: 8192/max_texture_dimension_2d: 4096/g' {} + || true
+          find . -type f -name "*.rs" -exec sed -i 's/8192/4096/g' {} + || true
+
+      # 2. بناء حزمة الويب الرسمية لـ SolidCraft
+      - name: Build Web Bundle
+        env:
+          RUSTFLAGS: "-A warnings"
+        run: |
+          if [ -d "apps/solidcraft-web" ]; then
+            cd apps/solidcraft-web
+          elif [ -d "apps/web" ]; then
+            cd apps/web
+          elif [ -d "apps/solidcraft" ]; then
+            cd apps/solidcraft
+          fi
+          trunk build --release
+          cd "$GITHUB_WORKSPACE"
+          mkdir -p www
+          if [ -d "dist/web" ]; then
+            cp -r dist/web/* www/
+          elif [ -d "apps/solidcraft-web/dist" ]; then
+            cp -r apps/solidcraft-web/dist/* www/
+          elif [ -d "dist" ]; then
+            cp -r dist/* www/
+          fi
+
+      # 3. إعداد Capacitor للأندرويد
+      - name: Setup Capacitor
+        run: |
+          npm init -y
+          npm install @capacitor/core @capacitor/cli @capacitor/android
+          npx cap init "SolidCraft" "com.craft.solidcraft" --web-dir "www"
+          npx cap add android
+          npx cap sync android
+
+      # 4. تفعيل التسريع العتادي لـ WebGL2 (ضروري للـ 3D)
+      - name: Enable Hardware Acceleration
+        run: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
